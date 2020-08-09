@@ -5,32 +5,33 @@ import torch
 from torch.nn import functional
 from torch.optim import Adam
 
-from architectures.gaussian_policy import GaussianPolicy
-from architectures.q_network import TwinQNet
+from architectures.gaussian_policy import ContGaussianPolicy
+from architectures.value_networks import ContTwinQNet
 from architectures.utils import polyak_update
 
 
-class SAC:
-    def __init__(self, state_dim, action_dim, action_range, ent_adj, alpha, gamma, lr, tau, n_until_target_update,
-                 device, architecture):
+# TODO
+class ContSAC:
+    def __init__(self, policy_config, value_config, action_range, device,
+                 lr=1e-5, gamma=0.99, tau=0.001, alpha=0.2, ent_adj=False, target_update_interval=1):
         self.device = device
 
-        self.policy = GaussianPolicy(state_dim, action_dim, action_range, architecture).to(self.device)
+        self.policy = ContGaussianPolicy(policy_config, action_range).to(self.device)
         self.policy_opt = Adam(self.policy.parameters(), lr=lr)
 
-        self.twin_q = TwinQNet(state_dim, action_dim, architecture).to(self.device)
+        self.twin_q = ContTwinQNet(value_config).to(self.device)
         self.twin_q_opt = Adam(self.twin_q.parameters(), lr=lr)
-        self.target_twin_q = TwinQNet(state_dim, action_dim, architecture).to(self.device)
+        self.target_twin_q = ContTwinQNet(value_config).to(self.device)
         polyak_update(self.twin_q, self.target_twin_q, 1)
 
         self.tau = tau
         self.gamma = gamma
-        self.n_until_target_update = n_until_target_update
+        self.n_until_target_update = target_update_interval
 
         self.alpha = alpha
         self.ent_adj = ent_adj
         if ent_adj:
-            self.target_entropy = -action_dim
+            self.target_entropy = -len(action_range)
             self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
             self.alpha_opt = Adam([self.log_alpha], lr=lr)
 
@@ -45,23 +46,21 @@ class SAC:
                 action, _, _ = self.policy.sample(state)
             return action.detach().cpu().numpy()[0]
 
-    def update(self, states, actions, rewards, next_states, ends):
+    def update(self, states, actions, rewards, next_states, dones):
         states = torch.as_tensor(states, dtype=torch.float32).to(self.device)
         actions = torch.as_tensor(actions, dtype=torch.float32).to(self.device)
         rewards = torch.as_tensor(rewards[:, np.newaxis], dtype=torch.float32).to(self.device)
         next_states = torch.as_tensor(next_states, dtype=torch.float32).to(self.device)
-        ends = torch.as_tensor(ends[:, np.newaxis], dtype=torch.float32).to(self.device)
+        done_masks = torch.as_tensor(1 - dones[:, np.newaxis], dtype=torch.float32).to(self.device)
 
         with torch.no_grad():
-            next_s_action, next_s_log_prob, _ = self.policy.sample(next_states)
-            next_s_q1, next_s_q2 = self.target_twin_q(next_states, next_s_action)
-            next_s_q = torch.min(next_s_q1, next_s_q2)
-
-            v = next_s_q - self.alpha * next_s_log_prob
-            expected_q = rewards + (torch.ones_like(ends, requires_grad=False) - ends) * self.gamma * v
+            next_action, next_log_prob, _ = self.policy.sample(next_states)
+            next_q = self.target_twin_q(next_states, next_action)[0]
+            v = next_q - self.alpha * next_log_prob
+            expected_q = rewards + done_masks * self.gamma * v
 
         # Q backprop
-        pred_q1, pred_q2 = self.twin_q(states, actions)
+        _, pred_q1, pred_q2 = self.twin_q(states, actions)
         q_loss = functional.mse_loss(pred_q1, expected_q) + functional.mse_loss(pred_q2, expected_q)
 
         self.twin_q_opt.zero_grad()
@@ -70,8 +69,7 @@ class SAC:
 
         # Policy backprop
         s_action, s_log_prob, _ = self.policy.sample(states)
-        policy_pred_q1, policy_pred_q2 = self.twin_q(states, s_action)
-        policy_loss = self.alpha * s_log_prob - torch.min(policy_pred_q1, policy_pred_q2)
+        policy_loss = self.alpha * s_log_prob - self.twin_q(states, s_action)[0]
         policy_loss = policy_loss.mean()
 
         self.policy_opt.zero_grad()
@@ -92,12 +90,9 @@ class SAC:
             polyak_update(self.twin_q, self.target_twin_q, self.tau)
             self.steps = 0
 
-        q_val = torch.min(pred_q1 + pred_q2).mean()
-        q_next = next_s_q.mean()
-        if self.ent_adj:
-            return q_val, q_next, self.alpha.item(), q_loss, policy_loss
-        else:
-            return q_val, q_next, self.alpha, q_loss, policy_loss
+        q_val = torch.min(pred_q1, pred_q2).mean()
+        q_next = next_q.mean()
+        return q_val, q_next, self.alpha.item() if self.ent_adj else self.alpha, q_loss, policy_loss
 
     def save_model(self, folder_name):
         path = 'saved_weights/' + folder_name

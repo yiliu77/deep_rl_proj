@@ -7,10 +7,10 @@ class ReplayBuffer:
     def __init__(self, capacity, batch_size):
         self.capacity = capacity
         self.batch_size = batch_size
-        self.buffer = deque(maxlen=capacity)
+        self.buffer = deque(maxlen=int(capacity))
 
-    def add(self, state, action, reward, next_state, done):
-        self.buffer.append((state, action, reward, next_state, done))
+    def add(self, *args):
+        self.buffer.append(args)
 
     def sample(self):
         batch = random.sample(self.buffer, k=self.batch_size)

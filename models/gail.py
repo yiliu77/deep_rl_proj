@@ -10,5 +10,5 @@ from architectures.utils import polyak_update
 
 
 class GAIL:
-    # in Progress
-    pass
+    def __init__(self):
+        pass
