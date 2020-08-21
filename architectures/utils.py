@@ -7,35 +7,35 @@ def polyak_update(network, target_network, tau):
         target_param.data.copy_(tau * param.data + target_param.data * (1.0 - tau))
 
 
-class MLP(nn.Module):
-    def __init__(self, layers, activation=nn.ReLU):
-        super().__init__()
-
-        weights = []
-        for i in range(len(layers) - 1):
-            weights.append(nn.Linear(layers[i], layers[i + 1]))
-            if i != len(layers) - 2:
-                weights.append(activation)
-        self.model = nn.Sequential(*weights)
-
-    def forward(self, inputs):
-        return self.model(inputs)
-
-
-class CNN(nn.Module):
-    def __init__(self, channels, kernels, strides, activation=nn.ReLU):
-        super().__init__()
-        assert len(channels) - 1 == len(kernels) == len(strides)
-
-        weights = []
-        for i in range(len(channels) - 1):
-            weights.append(nn.Conv2d(in_channels=channels[i], out_channels=channels[i + 1],
-                                     kernel_size=kernels[i], stride=strides[i]))
-            weights.append(activation)
-        self.model = nn.Sequential(*weights)
-
-    def forward(self, inputs):
-        return self.model(inputs)
+# class MLP(nn.Module):
+#     def __init__(self, layers, activation=nn.ReLU):
+#         super().__init__()
+#
+#         weights = []
+#         for i in range(len(layers) - 1):
+#             weights.append(nn.Linear(layers[i], layers[i + 1]))
+#             if i != len(layers) - 2:
+#                 weights.append(activation)
+#         self.model = nn.Sequential(*weights)
+#
+#     def forward(self, inputs):
+#         return self.model(inputs)
+#
+#
+# class CNN(nn.Module):
+#     def __init__(self, channels, kernels, strides, activation=nn.ReLU):
+#         super().__init__()
+#         assert len(channels) - 1 == len(kernels) == len(strides)
+#
+#         weights = []
+#         for i in range(len(channels) - 1):
+#             weights.append(nn.Conv2d(in_channels=channels[i], out_channels=channels[i + 1],
+#                                      kernel_size=kernels[i], stride=strides[i]))
+#             weights.append(activation)
+#         self.model = nn.Sequential(*weights)
+#
+#     def forward(self, inputs):
+#         return self.model(inputs)
 
 
 ACTIVATION_DICT = {'relu': nn.ReLU(), 'none': lambda x: x}
@@ -54,7 +54,7 @@ class Model(nn.Module):
         cnn_config, linear_config, split_config = Model._separate_config(architecture)
         self.cnn_layers, output_dim = Model._initialize_cnn_layers(input_dim, cnn_config, self.hidden_act)
         self.linear_layers, output_dim = Model._initialize_linear_layers(output_dim, linear_config, self.hidden_act)
-        self.split_layers = Model._initialize_split_layers(output_dim, split_config, self.hidden_act)
+        self.left_layers, self.right_layers = Model._initialize_split_layers(output_dim, split_config, self.hidden_act)
 
     @staticmethod
     def _separate_config(model_config):
@@ -122,38 +122,44 @@ class Model(nn.Module):
 
     @staticmethod
     def _initialize_split_layers(input_dim, split_config, hidden_activation):
-        split_layers = []
+        left_layers, right_layers = nn.ModuleList([]), nn.ModuleList([])
         for i in range(len(split_config)):
             layer_dict = split_config[i]
 
-            print([input_dim[0]])
             in_sizes = [input_dim[0]] * len(layer_dict['sizes']) if i == 0 else split_config[i - 1]['sizes']
             out_sizes = layer_dict['sizes'] if 'sizes' in layer_dict else None
             assert in_sizes is not None, "Size is none for linear layer"
             assert out_sizes is not None, "Size is none for linear layer"
 
-            split_layers.append((nn.Linear(in_sizes[i], out_sizes[i]) for i in range(len(out_sizes))))
+            left_layers.append(nn.Linear(in_sizes[0], out_sizes[0]))
+            right_layers.append(nn.Linear(in_sizes[1], out_sizes[1]))
             if i != len(split_config) - 1:
-                split_layers.append((hidden_activation for _ in range(len(out_sizes))))
-        return split_layers
+                left_layers.append(hidden_activation)
+                right_layers.append(hidden_activation)
+        return left_layers, right_layers
 
     def forward(self, x):
         if len(self.cnn_layers) != 0:
             for layer in self.cnn_layers:
                 x = layer(x)
             x = torch.flatten(x, start_dim=1)
-            if len(self.linear_layers) != 0 or len(self.split_layers) != 0:
+            if len(self.linear_layers) != 0 or len(self.left_layers) != 0 and len(self.right_layers) != 0:
                 x = self.hidden_act(x)
 
         if len(self.linear_layers) != 0:
             for layer in self.linear_layers:
                 x = layer(x)
-            if len(self.split_layers) != 0:
+            if len(self.left_layers) != 0 and len(self.right_layers) != 0:
                 x = self.hidden_act(x)
 
-        for i, layer in enumerate(self.split_layers):
-            if i == 0:
-                x = [l(x) for l in layer]
-            else:
-                x = [l(x[j]) for j, l in layer]
+        if len(self.left_layers) != 0 and len(self.right_layers) != 0:
+            l, r = x, x
+            for layer in self.left_layers:
+                l = layer(l)
+            for layer in self.right_layers:
+                r = layer(r)
+            x = [l, r]
+
+        if len(x) == 2:
+            return self.output_act(x[0]), self.output_act(x[1])
         return self.output_act(x)

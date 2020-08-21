@@ -58,4 +58,5 @@ class ContGaussianPolicy(nn.Module):
         device = args[0]
         self.action_scale = self.action_scale.to(device)
         self.action_bias = self.action_bias.to(device)
+        self.model = self.model.to(device)
         return super(ContGaussianPolicy, self).to(device)

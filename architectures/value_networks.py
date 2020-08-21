@@ -12,7 +12,6 @@ class ContQNet(nn.Module):
         return self.model(torch.cat([states, actions], 1))
 
 
-# TODO
 class DiscreteQNet(nn.Module):
     def __init__(self, model_config):
         super().__init__()
@@ -25,20 +24,22 @@ class DiscreteQNet(nn.Module):
 class ContTwinQNet(nn.Module):
     def __init__(self, model_config):
         super().__init__()
-        self.q_net = ContQNet(model_config)
+        self.q_net1 = ContQNet(model_config)
+        self.q_net2 = ContQNet(model_config)
 
     def forward(self, states, actions):
-        q1_out, q2_out = self.q_net(states, actions)
+        q1_out, q2_out = self.q_net1(states, actions), self.q_net2(states, actions)
         return torch.min(q1_out, q2_out), q1_out, q2_out
 
 
 class DiscreteTwinQNet(nn.Module):
     def __init__(self, model_config):
         super().__init__()
-        self.q_net = ContQNet(model_config)
+        self.q_net1 = ContQNet(model_config)
+        self.q_net2 = ContQNet(model_config)
 
     def forward(self, states, actions):
-        q1_out, q2_out = [q_val.gather(1, actions.unsqueeze(1)) for q_val in self.q_net(states)]
+        q1_out, q2_out = self.q_net1(states, actions), self.q_net2(states, actions)
         return torch.min(q1_out, q2_out), q1_out, q2_out
 
 

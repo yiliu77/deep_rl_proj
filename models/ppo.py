@@ -36,6 +36,8 @@ class DiscretePPO:
         self.val_net = ValueNet(value_config).to(self.device)
         self.val_net_opt = Adam(self.val_net.parameters(), lr=lr)
 
+        self.total_steps = 0
+
     def get_action(self, state, deterministic=False):
         with torch.no_grad():
             state = torch.as_tensor(state[np.newaxis, :].copy(), dtype=torch.float32).to(self.device)
@@ -80,8 +82,8 @@ class DiscretePPO:
 
         return policy_loss, value_loss, value_preds.mean()
 
-    def gae(self, rewards, values, next_values, end_masks):
-        deltas = rewards + self.gamma * next_values * end_masks - values
+    def gae(self, rewards, values, next_values, done_masks):
+        deltas = rewards + self.gamma * next_values * done_masks - values
         gaes = copy.deepcopy(deltas)
         for t in reversed(range(len(gaes) - 1)):
             gaes[t] = gaes[t] + self.lam * self.gamma * gaes[t + 1]
@@ -91,7 +93,7 @@ class DiscretePPO:
         self.policy.train()
         self.val_net.train()
         for i in range(num_games):
-            states, actions, action_probs, rewards, values, dones = [], [], [], [], [], []
+            states, actions, action_probs, rewards, values, done_masks = [], [], [], [], [], []
             state = self.env.reset()
             done = False
             n_steps = 0
@@ -102,17 +104,19 @@ class DiscretePPO:
                 else:
                     action, action_prob = self.get_action(state, deterministic)
 
-                value = self.get_value(state)
                 next_state, reward, done, _ = self.env.step(action)
-                n_steps += 1
+                value = self.get_value(state)
+                done_mask = 1.0 if n_steps == self.env._max_episode_steps - 1 else float(not done)
 
                 states.append(state)
                 actions.append(action)
                 action_probs.append(action_prob)
                 rewards.append(reward)
                 values.append(value)
-                dones.append(done if n_steps != self.env._max_episode_steps else False)
+                done_masks.append(done_mask)
 
+                self.total_steps += 1
+                n_steps += 1
                 state = next_state
 
             states = np.array(states)
@@ -120,10 +124,9 @@ class DiscretePPO:
             action_probs = np.array(action_probs)
             rewards = np.array(rewards)
             values = np.array(values)
-            dones = np.array(dones)
+            done_masks = np.array(done_masks)
 
             next_values = np.append(values[1:], [self.get_value(state)])
-            done_masks = 1 - np.array(dones)
             gaes = self.gae(rewards, values, next_values, done_masks)
             returns = gaes + values
             advs = (gaes - gaes.mean()) / gaes.std()
@@ -132,6 +135,7 @@ class DiscretePPO:
                 self.memory.add(*point)
 
             # training
+            # TODO change to steps
             if len(self.memory) > self.warmup_iters:
                 policy_losses, value_losses, value_preds = [], [], []
                 for _ in range(len(states)):
@@ -144,6 +148,7 @@ class DiscretePPO:
                 self.writer.add_scalar('Policy Loss', sum(policy_losses) / len(policy_losses), i)
                 self.writer.add_scalar('Value Loss', sum(value_losses) / len(value_losses), i)
                 self.writer.add_scalar('Reward', sum(rewards), i)
+            print("index: {}, steps: {}, total_rewards: {}".format(i, n_steps, rewards.sum()))
 
     def eval(self, num_games, render=True):
         self.policy.eval()
@@ -199,7 +204,7 @@ if __name__ == "__main__":
     }
     model = DiscretePPO(policy_config, value_config, env, "cuda")
 
-    model.load_model("CartPole-v1-PPO-5200", "cuda")
+    # model.load_model("CartPole-v1-PPO-5200", "cuda")
     model.train(800, deterministic=True)
-    model.save_model("CartPole-v1-PPO-6000")
+    # model.save_model("CartPole-v1-PPO-6000")
     model.eval(100)
