@@ -54,12 +54,13 @@ class DiscretePPO:
             return value.detach().cpu().numpy()[0][0]
 
     def train_step(self, states, actions, old_action_probs, returns, values, advs):
-        states = torch.as_tensor(states, dtype=torch.float32).to(self.device)
-        actions = torch.as_tensor(actions[:, np.newaxis], dtype=torch.int64).to(self.device)
-        old_action_probs = torch.as_tensor(old_action_probs, dtype=torch.float32).to(self.device)
-        returns = torch.as_tensor(returns[:, np.newaxis], dtype=torch.float32).to(self.device)
-        values = torch.as_tensor(values[:, np.newaxis], dtype=torch.float32).to(self.device)
-        advs = torch.as_tensor(advs[:, np.newaxis], dtype=torch.float32).to(self.device)
+        if not torch.is_tensor(states):
+            states = torch.as_tensor(states, dtype=torch.float32).to(self.device)
+            actions = torch.as_tensor(actions[:, np.newaxis], dtype=torch.int64).to(self.device)
+            old_action_probs = torch.as_tensor(old_action_probs, dtype=torch.float32).to(self.device)
+            returns = torch.as_tensor(returns[:, np.newaxis], dtype=torch.float32).to(self.device)
+            values = torch.as_tensor(values[:, np.newaxis], dtype=torch.float32).to(self.device)
+            advs = torch.as_tensor(advs[:, np.newaxis], dtype=torch.float32).to(self.device)
 
         action_probs = self.policy(states)
         ratios = torch.exp(torch.log(action_probs.gather(1, actions)) - torch.log(old_action_probs).gather(1, actions))
@@ -134,8 +135,6 @@ class DiscretePPO:
             for point in zip(states, actions, action_probs, returns, values, advs):
                 self.memory.add(*point)
 
-            # training
-            # TODO change to steps
             if len(self.memory) > self.warmup_iters:
                 policy_losses, value_losses, value_preds = [], [], []
                 for _ in range(len(states)):

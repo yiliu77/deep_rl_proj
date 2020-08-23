@@ -3,13 +3,9 @@ import gym
 import cv2
 
 
-class StackedEnv:
-    def __init__(self, env_name, width, height, n_img_stack, n_action_repeats):
-        self.env = gym.make(env_name)
-        self.action_space = self.env.action_space
-        self.observation_space = self.env.observation_space
-        self._max_episode_steps = self.env._max_episode_steps
-
+class StackedEnv(gym.Wrapper):
+    def __init__(self, env, width, height, n_img_stack, n_action_repeats):
+        super(StackedEnv, self).__init__(env)
         self.width = width
         self.height = height
         self.n_img_stack = n_img_stack
@@ -17,7 +13,7 @@ class StackedEnv:
         self.stack = []
 
     def reset(self):
-        img_rgb = self.env.reset()
+        img_rgb = super(StackedEnv, self).reset()
         img_gray = self.preprocess(img_rgb)
         self.stack = [img_gray] * self.n_img_stack
         return np.rollaxis(np.stack(self.stack, axis=2), 2, 0)
@@ -28,7 +24,7 @@ class StackedEnv:
         img_rgb = None
         info = None
         for i in range(self.n_action_repeats):
-            img_rgb, reward, done, info = self.env.step(action)
+            img_rgb, reward, done, info = super(StackedEnv, self).step(action)
             total_reward += reward
             if done:
                 break
@@ -37,9 +33,6 @@ class StackedEnv:
         self.stack.append(img_gray)
         assert len(self.stack) == self.n_img_stack
         return np.rollaxis(np.stack(self.stack, axis=2), 2, 0), total_reward, done, info
-
-    def render(self):
-        self.env.render()
 
     def preprocess(self, rgb_img):
         gray = np.dot(rgb_img[..., :], [0.299, 0.587, 0.114])

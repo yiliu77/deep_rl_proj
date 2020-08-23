@@ -135,32 +135,33 @@ from models.sac import ContSAC
 #     if epoch % n_epochs_per_save == 0:
 #         model.save_model("{}-{}".format(env_name, epoch))
 
-if __name__ == "__main__":
-    import gym
+import gym
+from environments.broken_joint import BrokenJointEnv
 
-    env = gym.make('Pendulum-v0')
-    # env._max_episode_steps = 3000
-    state_dim = env.observation_space.shape[0]
-    action_dim = env.action_space.shape[0]
-    policy_config = {
-        "input_dim": [state_dim],
-        "architecture": [{"name": "linear1", "size": 256},
-                         {"name": "linear2", "size": 256},
-                         {"name": "split1", "sizes": [action_dim, action_dim]}],
-        "hidden_activation": "relu",
-        "output_activation": "none"
-    }
-    value_config = {
-        "input_dim": [state_dim + action_dim],
-        "architecture": [{"name": "linear1", "size": 256},
-                         {"name": "linear2", "size": 256},
-                         {"name": "linear2", "size": 1}],
-        "hidden_activation": "relu",
-        "output_activation": "none"
-    }
-    model = ContSAC(policy_config, value_config, env, "cuda")
-    # model.train(500)
-    # model.load_model("Pendulum-v0-SAC-800", "cuda")
-    model.train(800, deterministic=False)
-    model.save_model("Pendulum-v0-SAC-1600")
-    model.eval(100)
+# env = gym.make('Ant-v2')
+env = BrokenJointEnv(gym.make('Ant-v2'), [0, 1, 2, 3])
+# env._max_episode_steps = 3000
+state_dim = env.observation_space.shape[0]
+action_dim = env.action_space.shape[0]
+policy_config = {
+    "input_dim": [state_dim],
+    "architecture": [{"name": "linear1", "size": 256},
+                     {"name": "linear2", "size": 256},
+                     {"name": "split1", "sizes": [action_dim, action_dim]}],
+    "hidden_activation": "relu",
+    "output_activation": "none"
+}
+value_config = {
+    "input_dim": [state_dim + action_dim],
+    "architecture": [{"name": "linear1", "size": 256},
+                     {"name": "linear2", "size": 256},
+                     {"name": "linear2", "size": 1}],
+    "hidden_activation": "relu",
+    "output_activation": "none"
+}
+model = ContSAC(policy_config, value_config, env, "cuda", ent_adj=True, n_steps_per_train=2)
+# model.train(500)
+model.load_model("Broken-Ant-v2-SAC-200", "cuda")
+# model.train(600, deterministic=False)
+# model.save_model("Ant-v2-SAC-800")
+model.eval(100)
