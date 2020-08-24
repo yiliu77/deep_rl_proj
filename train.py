@@ -161,7 +161,7 @@ value_config = {
 }
 model = ContSAC(policy_config, value_config, env, "cuda", ent_adj=True, n_updates_per_train=2)
 # model.train(500)
-model.load_model("Ant-v2-SAC-400", "cuda")
-# model.train(400, deterministic=False)
-# model.save_model("Ant-v2-SAC-400")
+# model.load_model("Ant-v2-SAC-400", "cuda")
+model.train(40, deterministic=False)
+model.save_model("Ant-v2-SAC-200")
 model.eval(100)
