@@ -40,9 +40,9 @@ sas_config = {
     "output_activation": "none"
 }
 model = DARC(policy_config, value_config, sa_config, sas_config, source_env, target_env, "cuda", ent_adj=True,
-             n_steps_per_train=2)
+             n_updates_per_train=2)
 # model.train(500)
-model.load_model("Ant-v2-DARC-200", "cuda")
-model.train(200, deterministic=False)
-model.save_model("Ant-v2-DARC-400")
+# model.load_model("Ant-v2-DARC2-400", "cuda")
+model.train(400, deterministic=False)
+# model.save_model("Ant-v2-DARC2-400")
 model.eval(100)

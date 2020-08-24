@@ -139,7 +139,7 @@ import gym
 from environments.broken_joint import BrokenJointEnv
 
 # env = gym.make('Ant-v2')
-env = BrokenJointEnv(gym.make('Ant-v2'), [0, 1, 2, 3])
+env = gym.make('Ant-v2')
 # env._max_episode_steps = 3000
 state_dim = env.observation_space.shape[0]
 action_dim = env.action_space.shape[0]
@@ -159,9 +159,9 @@ value_config = {
     "hidden_activation": "relu",
     "output_activation": "none"
 }
-model = ContSAC(policy_config, value_config, env, "cuda", ent_adj=True, n_steps_per_train=2)
+model = ContSAC(policy_config, value_config, env, "cuda", ent_adj=True, n_updates_per_train=2)
 # model.train(500)
-model.load_model("Broken-Ant-v2-SAC-200", "cuda")
-# model.train(600, deterministic=False)
-# model.save_model("Ant-v2-SAC-800")
+model.load_model("Ant-v2-SAC-400", "cuda")
+# model.train(400, deterministic=False)
+# model.save_model("Ant-v2-SAC-400")
 model.eval(100)

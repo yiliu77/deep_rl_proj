@@ -4,19 +4,19 @@ import numpy as np
 import torch
 from torch.nn import functional
 from torch.optim import Adam
-from torch.utils.tensorboard import SummaryWriter
 
 from architectures.gaussian_policy import ContGaussianPolicy
 from architectures.value_networks import ContTwinQNet
 from architectures.utils import polyak_update
 from replay_buffer import ReplayBuffer
+from tensor_writer import TensorWriter
 
 
 # TODO Discrete
 class ContSAC:
     def __init__(self, policy_config, value_config, env, device, log_dir="latest_runs",
-                 memory_size=1e5, warmup_iters=1000, batch_size=64, lr=0.0001, gamma=0.99, tau=0.003, alpha=0.2,
-                 ent_adj=False, target_update_interval=1, n_iter_per_train=1, n_updates_per_train=1):
+                 memory_size=1e5, warmup_games=10, batch_size=64, lr=0.0001, gamma=0.99, tau=0.003, alpha=0.2,
+                 ent_adj=False, target_update_interval=1, n_games_til_train=1, n_updates_per_train=1):
         self.device = device
         self.gamma = gamma
         self.batch_size = batch_size
@@ -24,10 +24,10 @@ class ContSAC:
         path = 'runs/' + log_dir
         if not os.path.exists(path):
             os.makedirs(path)
-        self.writer = SummaryWriter(path)
+        self.writer = TensorWriter(path)
 
         self.memory_size = memory_size
-        self.warmup_iters = warmup_iters
+        self.warmup_games = warmup_games
         self.memory = ReplayBuffer(self.memory_size, self.batch_size)
 
         self.env = env
@@ -43,7 +43,7 @@ class ContSAC:
         self.tau = tau
         self.gamma = gamma
         self.n_until_target_update = target_update_interval
-        self.n_iter_per_train = n_iter_per_train
+        self.n_games_til_train = n_games_til_train
         self.n_updates_per_train = n_updates_per_train
 
         self.alpha = alpha
@@ -79,7 +79,7 @@ class ContSAC:
             expected_q = rewards + done_masks * self.gamma * v
 
         # Q backprop
-        _, pred_q1, pred_q2 = self.twin_q(states, actions)
+        q_val, pred_q1, pred_q2 = self.twin_q(states, actions)
         q_loss = functional.mse_loss(pred_q1, expected_q) + functional.mse_loss(pred_q2, expected_q)
 
         self.twin_q_opt.zero_grad()
@@ -107,21 +107,22 @@ class ContSAC:
         if self.total_train_steps % self.n_until_target_update == 0:
             polyak_update(self.twin_q, self.target_twin_q, self.tau)
 
-        q_val = torch.min(pred_q1, pred_q2).mean()
-        q_next = next_q.mean()
-        # TODO figure out convention for loss outputs
-        return q_val, q_next, self.alpha.item() if self.ent_adj else self.alpha, q_loss, policy_loss
+        return {'Loss/Policy Loss': policy_loss,
+                'Loss/Q Loss': q_loss,
+                'Stats/Avg Q Val': q_val.mean(),
+                'Stats/Avg Q Next Val': next_q.mean(),
+                'Stats/Avg Alpha': self.alpha.item() if self.ent_adj else self.alpha}
 
     def train(self, num_games, deterministic=False):
         self.policy.train()
         self.twin_q.train()
         for i in range(num_games):
-            total_rewards = 0
+            total_reward = 0
             n_steps = 0
             done = False
             state = self.env.reset()
             while not done:
-                if self.total_train_steps <= self.warmup_iters:
+                if self.total_train_steps <= self.warmup_games:
                     action = self.env.action_space.sample()
                 else:
                     action = self.get_action(state, deterministic)
@@ -132,16 +133,21 @@ class ContSAC:
                 self.memory.add(state, action, reward, next_state, done_mask)
 
                 n_steps += 1
-                total_rewards += reward
+                total_reward += reward
                 state = next_state
 
-                if self.total_train_steps >= self.warmup_iters and self.total_train_steps % self.n_iter_per_train == 0:
-                    for _ in range(self.n_updates_per_train):
+            if i >= self.warmup_games:
+                self.writer.add_scalar('Env/Rewards', total_reward, i)
+                self.writer.add_scalar('Env/N_Steps', n_steps, i)
+                if i % self.n_games_til_train == 0:
+                    for _ in range(n_steps * self.n_updates_per_train):
                         self.total_train_steps += 1
                         s, a, r, s_, d = self.memory.sample()
-                        self.train_step(s, a, r, s_, d)
-            # TODO change into summary
-            print("index: {}, steps: {}, total_rewards: {}".format(i, n_steps, total_rewards))
+                        train_info = self.train_step(s, a, r, s_, d)
+                        self.writer.add_train_step_info(train_info, i)
+                    self.writer.write_train_step()
+
+            print("index: {}, steps: {}, total_rewards: {}".format(i, n_steps, total_reward))
 
     def eval(self, num_games, render=True):
         self.policy.eval()

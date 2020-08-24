@@ -1,11 +1,9 @@
-import os
-
 import numpy as np
 import torch
 from torch import nn
 from torch.optim import Adam
 
-from architectures.utils import Model
+from architectures.utils import Model, gen_noise
 from replay_buffer import ReplayBuffer
 from models.sac import ContSAC
 
@@ -13,17 +11,20 @@ from models.sac import ContSAC
 class DARC(ContSAC):
     def __init__(self, policy_config, value_config, sa_config, sas_config, source_env, target_env, device,
                  log_dir="latest_runs", memory_size=1e5, warmup_games=10, batch_size=64, lr=0.0001, gamma=0.99,
-                 tau=0.003, alpha=0.2, ent_adj=False, delta_r_scale=1.0, target_update_interval=1, n_game_per_train=1,
-                 n_updates_per_train=1):
+                 tau=0.003, alpha=0.2, ent_adj=False, delta_r_scale=1.0, s_t_ratio=10, noise_scale=1.0,
+                 target_update_interval=1, n_games_til_train=1, n_updates_per_train=1):
         super(DARC, self).__init__(policy_config, value_config, source_env, device, log_dir,
                                    memory_size, None, batch_size, lr, gamma, tau,
                                    alpha, ent_adj, target_update_interval, None, n_updates_per_train)
         self.delta_r_scale = delta_r_scale
+        self.s_t_ratio = s_t_ratio
+        self.noise_scale = noise_scale
+
         self.source_env = source_env
         self.target_env = target_env
 
         self.warmup_games = warmup_games
-        self.n_game_per_train = n_game_per_train
+        self.n_games_til_train = n_games_til_train
 
         self.sa_classifier = Model(sa_config).to(self.device)
         self.sa_classifier_opt = Adam(self.sa_classifier.parameters(), lr=lr)
@@ -51,50 +52,52 @@ class DARC(ContSAC):
         with torch.no_grad():
             sa_inputs = torch.cat([s_states, s_actions], 1)
             sas_inputs = torch.cat([s_states, s_actions, s_next_states], 1)
-            sa_logits = self.sa_classifier(sa_inputs + torch.randn(sa_inputs.shape).to(self.device))
-            sas_logits = self.sas_adv_classifier(sas_inputs + torch.randn(sas_inputs.shape).to(self.device))
+            sa_logits = self.sa_classifier(sa_inputs + gen_noise(self.noise_scale, sa_inputs, self.device))
+            sas_logits = self.sas_adv_classifier(sas_inputs + gen_noise(self.noise_scale, sas_inputs, self.device))
             sa_log_probs = torch.log(torch.softmax(sa_logits, dim=1) + 1e-12)
             sas_log_probs = torch.log(torch.softmax(sas_logits + sa_logits, dim=1) + 1e-12)
-
-            t_sa_inputs = torch.cat([t_states, t_actions], 1)
-            t_sas_inputs = torch.cat([t_states, t_actions, t_next_states], 1)
-            t_sa_logits = self.sa_classifier(t_sa_inputs + torch.randn(t_sa_inputs.shape).to(self.device))
-            t_sas_logits = self.sas_adv_classifier(t_sas_inputs + torch.randn(t_sas_inputs.shape).to(self.device))
-
-            # print(torch.mean(torch.argmax(torch.softmax(sa_logits, dim=1), dim=1).double()).item(),
-            #       torch.mean(torch.argmax(torch.softmax(sas_logits, dim=1), dim=1).double()).item(),
-            #       torch.mean(torch.argmax(torch.softmax(t_sa_logits, dim=1), dim=1).double()).item(),
-            #       torch.mean(torch.argmax(torch.softmax(t_sas_logits, dim=1), dim=1).double()).item())
 
             delta_r = sas_log_probs[:, 1] - sas_log_probs[:, 0] - sa_log_probs[:, 1] + sa_log_probs[:, 0]
             if game_count >= 2 * self.warmup_games:
                 s_rewards = s_rewards + self.delta_r_scale * delta_r.unsqueeze(1)
 
-        super(DARC, self).train_step(s_states, s_actions, s_rewards, s_next_states, s_done_masks)
+        train_info = super(DARC, self).train_step(s_states, s_actions, s_rewards, s_next_states, s_done_masks)
 
-        # TODO scale
         s_sa_inputs = torch.cat([s_states, s_actions], 1)
         s_sas_inputs = torch.cat([s_states, s_actions, s_next_states], 1)
         t_sa_inputs = torch.cat([t_states, t_actions], 1)
         t_sas_inputs = torch.cat([t_states, t_actions, t_next_states], 1)
-        s_sa_logits = self.sa_classifier(s_sa_inputs + torch.randn(s_sa_inputs.shape).to(self.device))
-        s_sas_logits = self.sas_adv_classifier(s_sas_inputs + torch.randn(s_sas_inputs.shape).to(self.device))
-        t_sa_logits = self.sa_classifier(t_sa_inputs + torch.randn(t_sa_inputs.shape).to(self.device))
-        t_sas_logits = self.sas_adv_classifier(t_sas_inputs + torch.randn(t_sas_inputs.shape).to(self.device))
+        s_sa_logits = self.sa_classifier(s_sa_inputs + gen_noise(self.noise_scale, s_sa_inputs, self.device))
+        s_sas_logits = self.sas_adv_classifier(s_sas_inputs + gen_noise(self.noise_scale, s_sas_inputs, self.device))
+        t_sa_logits = self.sa_classifier(t_sa_inputs + gen_noise(self.noise_scale, t_sa_inputs, self.device))
+        t_sas_logits = self.sas_adv_classifier(t_sas_inputs + gen_noise(self.noise_scale, t_sas_inputs, self.device))
 
         loss_function = nn.CrossEntropyLoss()
         label_zero = torch.zeros((s_sa_logits.shape[0],), dtype=torch.int64).to(self.device)
         label_one = torch.ones((t_sa_logits.shape[0],), dtype=torch.int64).to(self.device)
-        classification_loss = loss_function(s_sa_logits, label_zero)
-        classification_loss += loss_function(t_sa_logits, label_one)
-        classification_loss += loss_function(s_sas_logits, label_zero)
-        classification_loss += loss_function(t_sas_logits, label_one)
+        classify_loss = loss_function(s_sa_logits, label_zero)
+        classify_loss += loss_function(t_sa_logits, label_one)
+        classify_loss += loss_function(s_sas_logits, label_zero)
+        classify_loss += loss_function(t_sas_logits, label_one)
 
         self.sa_classifier_opt.zero_grad()
         self.sas_adv_classifier_opt.zero_grad()
-        classification_loss.backward()
+        classify_loss.backward()
         self.sa_classifier_opt.step()
         self.sas_adv_classifier_opt.step()
+
+        s_sa_acc = 1 - torch.argmax(s_sa_logits, dim=1).double().mean()
+        s_sas_acc = 1 - torch.argmax(s_sas_logits, dim=1).double().mean()
+        t_sa_acc = torch.argmax(t_sa_logits, dim=1).double().mean()
+        t_sas_acc = torch.argmax(t_sas_logits, dim=1).double().mean()
+
+        train_info['Loss/Classify Loss'] = classify_loss
+        train_info['Stats/Avg Delta Reward'] = delta_r.mean()
+        train_info['Stats/Avg Source SA Acc'] = s_sa_acc
+        train_info['Stats/Avg Source SAS Acc'] = s_sas_acc
+        train_info['Stats/Avg Target SA Acc'] = t_sa_acc
+        train_info['Stats/Avg Target SAS Acc'] = t_sas_acc
+        return train_info
 
     def train(self, num_games, deterministic=False):
         self.policy.train()
@@ -104,18 +107,24 @@ class DARC(ContSAC):
         for i in range(num_games):
             source_reward, source_step = self.simulate_env(i, "source", deterministic)
 
-             # TODO
-            if i < self.warmup_games or i % 10 == 0:
+            if i < self.warmup_games or i % self.s_t_ratio == 0:
                 target_reward, target_step = self.simulate_env(i, "target", deterministic)
+                self.writer.add_scalar('Target Env/Rewards', target_reward, i)
+                self.writer.add_scalar('Target Env/N_Steps', target_step, i)
                 print("TARGET: index: {}, steps: {}, total_rewards: {}".format(i, target_step, target_reward))
 
-            if i >= self.warmup_games and i % self.n_game_per_train == 0:
-                for _ in range(source_step * self.n_updates_per_train):
-                    self.total_train_steps += 1
-                    s_s, s_a, s_r, s_s_, s_d = self.source_memory.sample()
-                    t_s, t_a, t_r, t_s_, t_d = self.target_memory.sample()
-                    self.train_step(s_s, s_a, s_r, s_s_, s_d, t_s, t_a, t_r, t_s_, t_d, i)
-            # TODO change into summary
+            if i >= self.warmup_games:
+                self.writer.add_scalar('Source Env/Rewards', source_reward, i)
+                self.writer.add_scalar('Source Env/N_Steps', source_step, i)
+                if i % self.n_games_til_train == 0:
+                    for _ in range(source_step * self.n_updates_per_train):
+                        self.total_train_steps += 1
+                        s_s, s_a, s_r, s_s_, s_d = self.source_memory.sample()
+                        t_s, t_a, t_r, t_s_, t_d = self.target_memory.sample()
+                        train_info = self.train_step(s_s, s_a, s_r, s_s_, s_d, t_s, t_a, t_r, t_s_, t_d, i)
+                        self.writer.add_train_step_info(train_info, i)
+                    self.writer.write_train_step()
+
             print("SOURCE: index: {}, steps: {}, total_rewards: {}".format(i, source_step, source_reward))
 
     def simulate_env(self, game_count, env_name, deterministic):

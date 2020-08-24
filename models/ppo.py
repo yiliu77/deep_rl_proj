@@ -4,16 +4,16 @@ import os
 import numpy as np
 import torch
 from torch.optim import Adam
-from torch.utils.tensorboard import SummaryWriter
 
 from architectures.gaussian_policy import DiscreteGaussianPolicy
 from architectures.value_networks import ValueNet
 from replay_buffer import ReplayBuffer
+from tensor_writer import TensorWriter
 
 
 class DiscretePPO:
     def __init__(self, policy_config, value_config, env, device, log_dir="latest_runs",
-                 memory_size=1e5, warmup_iters=300, batch_size=32, lr=1e-3, gamma=0.99, lam=0.9, epsilon=0.2):
+                 memory_size=1e5, warmup_games=10, batch_size=32, lr=1e-3, gamma=0.99, lam=0.9, epsilon=0.2):
         self.device = device
         self.gamma = gamma
         self.lam = lam
@@ -23,10 +23,10 @@ class DiscretePPO:
         path = 'runs/' + log_dir
         if not os.path.exists(path):
             os.makedirs(path)
-        self.writer = SummaryWriter(path)
+        self.writer = TensorWriter(path)
 
         self.memory_size = memory_size
-        self.warmup_iters = warmup_iters
+        self.warmup_games = warmup_games
         self.memory = ReplayBuffer(self.memory_size, self.batch_size)
 
         self.env = env
@@ -35,8 +35,6 @@ class DiscretePPO:
 
         self.val_net = ValueNet(value_config).to(self.device)
         self.val_net_opt = Adam(self.val_net.parameters(), lr=lr)
-
-        self.total_steps = 0
 
     def get_action(self, state, deterministic=False):
         with torch.no_grad():
@@ -81,7 +79,9 @@ class DiscretePPO:
         value_loss.backward()
         self.val_net_opt.step()
 
-        return policy_loss, value_loss, value_preds.mean()
+        return {'Loss/Policy Loss': policy_loss,
+                'Loss/Value Loss': value_loss,
+                'Loss/Avg Value': value_preds.mean()}
 
     def gae(self, rewards, values, next_values, done_masks):
         deltas = rewards + self.gamma * next_values * done_masks - values
@@ -99,7 +99,7 @@ class DiscretePPO:
             done = False
             n_steps = 0
             while not done:
-                if len(self.memory) <= self.warmup_iters:
+                if i <= self.warmup_games:
                     action = self.env.action_space.sample()
                     action_prob = self.env.action_space.n * [1 / self.env.action_space.n]
                 else:
@@ -116,7 +116,6 @@ class DiscretePPO:
                 values.append(value)
                 done_masks.append(done_mask)
 
-                self.total_steps += 1
                 n_steps += 1
                 state = next_state
 
@@ -135,18 +134,15 @@ class DiscretePPO:
             for point in zip(states, actions, action_probs, returns, values, advs):
                 self.memory.add(*point)
 
-            if len(self.memory) > self.warmup_iters:
-                policy_losses, value_losses, value_preds = [], [], []
-                for _ in range(len(states)):
+            if i > self.warmup_games:
+                self.writer.add_scalar('Env/Rewards', sum(rewards), i)
+                self.writer.add_scalar('Env/N_Steps', n_steps, i)
+                for _ in range(n_steps):
                     tr_states, tr_actions, tr_old_action_probs, tr_returns, tr_values, tr_advs = self.memory.sample()
-                    policy_loss, value_loss, value_pred = self.train_step(tr_states, tr_actions, tr_old_action_probs,
-                                                                           tr_returns, tr_values, tr_advs)
-                    policy_losses.append(policy_loss)
-                    value_losses.append(value_loss)
-                    value_preds.append(value_pred)
-                self.writer.add_scalar('Policy Loss', sum(policy_losses) / len(policy_losses), i)
-                self.writer.add_scalar('Value Loss', sum(value_losses) / len(value_losses), i)
-                self.writer.add_scalar('Reward', sum(rewards), i)
+                    train_info = self.train_step(tr_states, tr_actions, tr_old_action_probs, tr_returns, tr_values,
+                                                 tr_advs)
+                    self.writer.add_train_step_info(train_info, i)
+                self.writer.write_train_step()
             print("index: {}, steps: {}, total_rewards: {}".format(i, n_steps, rewards.sum()))
 
     def eval(self, num_games, render=True):
@@ -158,7 +154,7 @@ class DiscretePPO:
             total_reward = 0
             while not done:
                 if render:
-                    env.render()
+                    self.env.render()
                 action, action_prob = self.get_action(state, deterministic=True)
                 next_state, reward, done, _ = self.env.step(action)
                 total_reward += reward
@@ -178,32 +174,3 @@ class DiscretePPO:
         path = 'saved_weights/' + folder_name
         self.policy.load_state_dict(torch.load(path + '/policy', map_location=torch.device(device)))
         self.val_net.load_state_dict(torch.load(path + '/val_net', map_location=torch.device(device)))
-
-
-if __name__ == "__main__":
-    import gym
-
-    env = gym.make('CartPole-v1')
-    env._max_episode_steps = 3000
-    n_states = env.observation_space.shape[0]
-    n_actions = env.action_space.n
-    policy_config = {
-        "input_dim": [n_states],
-        "architecture": [{"name": "linear1", "size": 80},
-                         {"name": "linear3", "size": n_actions}],
-        "hidden_activation": "relu",
-        "output_activation": "none"
-    }
-    value_config = {
-        "input_dim": [n_states],
-        "architecture": [{"name": "linear1", "size": 80},
-                         {"name": "linear3", "size": 1}],
-        "hidden_activation": "relu",
-        "output_activation": "none"
-    }
-    model = DiscretePPO(policy_config, value_config, env, "cuda")
-
-    # model.load_model("CartPole-v1-PPO-5200", "cuda")
-    model.train(800, deterministic=True)
-    # model.save_model("CartPole-v1-PPO-6000")
-    model.eval(100)
