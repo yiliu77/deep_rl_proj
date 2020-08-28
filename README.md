@@ -14,4 +14,4 @@ The policy uses a gaussian distribution for continuous action prediction and the
 
 #### DARC
 DARC builds on top of SAC for transfer from source to target domain by attempting to match transition probabilities. This is done through an additional classifier for classification between source and target domains and adding reward based on dynamics adaptation. <br>
-<img src="https://render.githubusercontent.com/render/math?math=\delta r(s_t, a_t, s_{t+1})=log p_{target}(target | s_t, a_t, s_{t+1}) - log p(target |s_t, a_t) - log p (source|s_t, a_t, s_{t+1}) + log p(source |s_t, a_t)"><br>
+<img src="https://render.githubusercontent.com/render/math?math=\delta r(s_t, a_t, s')=log p_{target}(target | s_t, a_t, s') - log p(target |s_t, a_t) - log p (source|s_t, a_t, s') + log p(source |s_t, a_t)"><br>
