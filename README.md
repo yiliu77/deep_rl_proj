@@ -4,6 +4,7 @@ Implementation of deep reinforcement learning models
 
 ### Models
 - Soft Actor Critic
+- DARC
 - GAIL (In Progress)
 
 #### SAC
